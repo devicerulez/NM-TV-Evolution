@@ -23,7 +23,7 @@
 #include <time.h>
 #include <math.h>
 
-#define FW_VERSION "1.0.0"
+#define FW_VERSION "1.0.1"
 
 // ---------------------------------------------------------------- Pin -------
 #define PIN_BL        19   // retroilluminazione, PWM, attiva bassa
@@ -1148,18 +1148,26 @@ void setup() {
   delay(50);
   loadCfg();
 
+  Serial.printf("\n=== NM-TV Meteo & Aria v%s ===\n", FW_VERSION);
+  Serial.println("1) alimento il pannello (GPIO21 LOW)");
   pinMode(PIN_PANEL_PWR, OUTPUT);
   digitalWrite(PIN_PANEL_PWR, LOW);
   ledcSetup(0, 5000, 8);
   ledcAttachPin(PIN_BL, 0);
   setBacklight(0);
-  delay(100);
+  delay(300);                       // il pannello ha bisogno di tempo dopo l'accensione
 
+  Serial.println("2) inizializzo il display");
   tft.init();
   tft.setRotation(cfg.rot ? 2 : 0);
   tft.invertDisplay(cfg.inv);
-  tft.fillScreen(C_BG);
   setBacklight(255);
+  Serial.println("3) test colori: rosso, verde, blu");
+  tft.fillScreen(TFT_RED);   delay(400);
+  tft.fillScreen(TFT_GREEN); delay(400);
+  tft.fillScreen(TFT_BLUE);  delay(400);
+  tft.fillScreen(C_BG);
+  Serial.println("4) display ok");
 
   mtx = xSemaphoreCreateMutex();
 
