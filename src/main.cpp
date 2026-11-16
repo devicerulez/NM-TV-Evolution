@@ -23,7 +23,7 @@
 #include <time.h>
 #include <math.h>
 
-#define FW_VERSION "1.0.1"
+#define FW_VERSION "1.0.2"
 
 // ---------------------------------------------------------------- Pin -------
 #define PIN_BL        19   // retroilluminazione, PWM, attiva bassa
@@ -72,7 +72,7 @@ static const uint32_t AIR_MS     = 30UL * 60UL * 1000UL;     // aria ogni 30 min
 struct Config {
   String ssid, pass, cityq, city;
   float lat = 0, lon = 0;
-  bool geo = false, fmt12 = false, inv = false, rot = false;
+  bool geo = false, fmt12 = false, inv = true, rot = false;
 };
 Config cfg;
 Preferences prefs;
@@ -87,7 +87,7 @@ void loadCfg() {
   cfg.lon   = prefs.getFloat("lon", 0);
   cfg.geo   = prefs.getBool("geo", false);
   cfg.fmt12 = prefs.getBool("fmt12", false);
-  cfg.inv   = prefs.getBool("inv", false);
+  cfg.inv   = prefs.getBool("inv", true);
   cfg.rot   = prefs.getBool("rot", false);
   prefs.end();
 }
@@ -559,8 +559,19 @@ static const uint32_t DOUBLE_MS  = 350;
 static const uint32_t MIN_TAP_MS = 30;
 
 float touchBase = 60;
-uint16_t thrOn = 43, thrOff = 49;
+uint16_t thrOn = 50, thrOff = 55;
+uint16_t touchRaw = 0;
 bool tState = false;
+uint32_t stuckSince = 0;
+
+// Soglie relative alla base a riposo: il tocco abbassa il valore di almeno il 10 %
+// (minimo 4 unita'), il rilascio avviene a meta' di quella distanza (isteresi).
+static void setThr() {
+  float drop = touchBase * 0.10f;
+  if (drop < 4) drop = 4;
+  thrOn = (uint16_t)(touchBase - drop);
+  thrOff = (uint16_t)(touchBase - drop * 0.5f);
+}
 
 uint16_t readTouch() {
   uint16_t a = touchRead(PIN_TOUCH), b = touchRead(PIN_TOUCH), c = touchRead(PIN_TOUCH);
@@ -571,25 +582,39 @@ uint16_t readTouch() {
 }
 
 void calibrateTouch() {
+  touchRead(PIN_TOUCH);          // la prima lettura puo' essere sporca
+  delay(30);
   uint32_t sum = 0;
   for (int i = 0; i < 32; i++) {
-    sum += touchRead(PIN_TOUCH);
+    sum += readTouch();
     delay(8);
   }
   touchBase = sum / 32.0f;
-  thrOn = (uint16_t)(touchBase * 0.72f);
-  thrOff = (uint16_t)(touchBase * 0.82f);
+  setThr();
   Serial.printf("Touch: base=%.0f soglia on=%u off=%u\n", touchBase, thrOn, thrOff);
 }
 
 bool touchPressed() {
   uint16_t v = readTouch();
+  touchRaw = v;
   if (!tState && v < thrOn) tState = true;
   else if (tState && v > thrOff) tState = false;
-  if (!tState && v > thrOn) {            // segue lentamente la deriva a riposo
-    touchBase += ((float)v - touchBase) / 128.0f;
-    thrOn = (uint16_t)(touchBase * 0.72f);
-    thrOff = (uint16_t)(touchBase * 0.82f);
+
+  uint32_t now = millis();
+  if (!tState) {
+    stuckSince = 0;
+    if (v >= thrOff) {                       // segue lentamente la deriva a riposo
+      touchBase += ((float)v - touchBase) / 256.0f;
+      setThr();
+    }
+  } else {
+    if (!stuckSince) stuckSince = now;
+    else if (now - stuckSince > 15000) {     // "premuto" da troppo: ricalibra
+      touchBase = v;
+      setThr();
+      tState = false;
+      stuckSince = 0;
+    }
   }
   return tState;
 }
@@ -1131,8 +1156,19 @@ void updateScreen() {
   }
   bool changed = syncData();
   if (!inFunc) {
+#ifdef TOUCH_DEBUG
+    static uint32_t dbgAt = 0;
+    if (millis() - dbgAt > 150) {
+      dbgAt = millis();
+      char b[48];
+      snprintf(b, sizeof b, "T:%u base:%.0f on:%u %s", touchRaw, touchBase, thrOn, tState ? "PREMUTO" : "");
+      tft.fillRect(0, 222, 240, 18, C_BG);
+      drawStr(b, 120, 224, 2, 1, tState ? C_SUN : C_DIM, C_BG);
+    }
+#else
     String ip = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "";
     if (ip != lastIp) drawMenuFooter();
+#endif
   } else if (menuIdx == 0 && funcIdx == 0) {
     meteoTick(changed);
   } else if (changed) {
@@ -1162,12 +1198,8 @@ void setup() {
   tft.setRotation(cfg.rot ? 2 : 0);
   tft.invertDisplay(cfg.inv);
   setBacklight(255);
-  Serial.println("3) test colori: rosso, verde, blu");
-  tft.fillScreen(TFT_RED);   delay(400);
-  tft.fillScreen(TFT_GREEN); delay(400);
-  tft.fillScreen(TFT_BLUE);  delay(400);
   tft.fillScreen(C_BG);
-  Serial.println("4) display ok");
+  Serial.println("3) display ok");
 
   mtx = xSemaphoreCreateMutex();
 
